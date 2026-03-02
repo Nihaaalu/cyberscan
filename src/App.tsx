@@ -50,13 +50,20 @@ export default function App() {
     }
   }, [logs]);
 
-  const getBrowserInfo = () => {
+  const getBrowserInfo = async () => {
     const ua = navigator.userAgent;
     let browser = "Unknown";
     let version = "Unknown";
     let engine = "Unknown";
 
-    if (ua.includes("Edg")) {
+    // @ts-ignore
+    const isBrave = navigator.brave && await navigator.brave.isBrave();
+
+    if (isBrave) {
+      browser = "Brave";
+      version = ua.split("Chrome/")[1]?.split(" ")[0] || "Unknown";
+      engine = "Chromium";
+    } else if (ua.includes("Edg")) {
       browser = "Microsoft Edge";
       version = ua.split("Edg/")[1]?.split(" ")[0] || "Unknown";
     } else if (ua.includes("OPR") || ua.includes("Opera")) {
@@ -73,15 +80,17 @@ export default function App() {
       version = ua.split("Firefox/")[1]?.split(" ")[0] || "Unknown";
     }
 
-    if (ua.includes("AppleWebKit")) {
-      engine = "WebKit";
-      if (ua.includes("Chrome") || ua.includes("Edg") || ua.includes("OPR")) {
-        engine = "Blink";
+    if (engine === "Unknown") {
+      if (ua.includes("AppleWebKit")) {
+        engine = "WebKit";
+        if (ua.includes("Chrome") || ua.includes("Edg") || ua.includes("OPR")) {
+          engine = "Blink";
+        }
+      } else if (ua.includes("Gecko") && !ua.includes("KHTML")) {
+        engine = "Gecko";
+      } else if (ua.includes("Trident")) {
+        engine = "Trident";
       }
-    } else if (ua.includes("Gecko") && !ua.includes("KHTML")) {
-      engine = "Gecko";
-    } else if (ua.includes("Trident")) {
-      engine = "Trident";
     }
 
     return { browser, version, engine, userAgent: ua };
@@ -128,86 +137,115 @@ export default function App() {
 
   const startScan = async () => {
     setStep('scanning');
+    setProgress(0);
+    setLogs([]);
     addLog('Initializing system scan...');
-    
-    // Simulate progress and data gathering
-    const steps = [
-      { p: 5, m: 'Accessing browser environment...' },
-      { p: 15, m: 'Querying navigator API...' },
-      { p: 25, m: 'Retrieving hardware specifications...' },
-      { p: 40, m: 'Detecting network configuration...' },
-      { p: 50, m: 'Initiating network throughput test...' },
-      { p: 85, m: 'Fetching geolocation data...' },
-      { p: 100, m: 'Scan complete. Compiling report.' }
+
+    const quickData = {
+      userAgent: navigator.userAgent,
+      os: navigator.platform,
+      language: navigator.language,
+      resolution: `${window.screen.width}x${window.screen.height}`,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
+      deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop',
+    };
+
+    const tasks = [
+      { 
+        id: 'browser', 
+        weight: 15, 
+        msg: 'Browser environment analyzed.', 
+        fn: () => getBrowserInfo() 
+      },
+      { 
+        id: 'os', 
+        weight: 15, 
+        msg: 'OS and device profile detected.', 
+        fn: () => Promise.resolve(navigator.platform) 
+      },
+      { 
+        id: 'gpu', 
+        weight: 15, 
+        msg: 'Hardware specifications retrieved.', 
+        fn: () => Promise.resolve(getGPU()) 
+      },
+      { 
+        id: 'location', 
+        weight: 20, 
+        msg: 'Geolocation data fetched.', 
+        fn: () => fetch('https://ipapi.co/json/').then(res => res.json()).catch(() => ({})) 
+      },
+      { 
+        id: 'speed', 
+        weight: 25, 
+        msg: 'Network throughput test complete.', 
+        fn: () => runSpeedTest() 
+      },
+      { 
+        id: 'system', 
+        weight: 10, 
+        msg: 'System status and battery levels verified.', 
+        fn: async () => {
+          try {
+            // @ts-ignore
+            const battery = await navigator.getBattery();
+            return `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'Discharging'})`;
+          } catch (e) { return 'Not available'; }
+        }
+      }
     ];
 
-    let networkSpeed = 'Unknown';
-
-    for (const s of steps) {
-      if (s.p === 50) {
-        networkSpeed = await runSpeedTest();
-        setProgress(75); // Jump after speed test
-      } else {
-        await new Promise(r => setTimeout(r, 600));
-        setProgress(s.p);
-      }
-      addLog(s.m);
-    }
+    let completedWeight = 0;
+    const results: any = {};
 
     try {
-      // Real data gathering
-      const ipRes = await fetch('https://ipapi.co/json/').then(res => res.json());
-      
-      let batteryInfo = 'Not available';
-      try {
-        // @ts-ignore
-        const battery = await navigator.getBattery();
-        batteryInfo = `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'Discharging'})`;
-      } catch (e) {}
+      // Run tasks in parallel but track progress
+      await Promise.all(tasks.map(async (task, index) => {
+        // Add a small staggered delay for the "start" of each task branch
+        await new Promise(r => setTimeout(r, index * 100));
+        
+        const result = await task.fn();
+        results[task.id] = result;
+        
+        completedWeight += task.weight;
+        setProgress(Math.min(completedWeight, 100));
+        addLog(task.msg);
+      }));
 
-      const browserInfo = getBrowserInfo();
-
-      const data: ScanData = {
-        ip: ipRes.ip || 'Unknown',
-        location: `${ipRes.city || 'Unknown'}, ${ipRes.country_name || 'Unknown'}`,
-        browser: browserInfo.browser,
-        browserVersion: browserInfo.version,
-        engine: browserInfo.engine,
-        userAgent: browserInfo.userAgent,
-        os: navigator.platform,
-        deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop',
-        resolution: `${window.screen.width}x${window.screen.height}`,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        language: navigator.language,
-        cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
-        gpu: getGPU(),
-        network: networkSpeed,
-        battery: batteryInfo
+      const finalData: ScanData = {
+        ...quickData,
+        ip: results.location.ip || 'Unknown',
+        location: `${results.location.city || 'Unknown'}, ${results.location.country_name || 'Unknown'}`,
+        browser: results.browser.browser,
+        browserVersion: results.browser.version,
+        engine: results.browser.engine,
+        userAgent: results.browser.userAgent,
+        gpu: results.gpu,
+        network: results.speed,
+        battery: results.system
       };
 
-      setScanData(data);
+      // Ensure we hit 100%
+      setProgress(100);
+      
+      // Immediate transition
+      setScanData(finalData);
       setStep('results');
     } catch (error) {
-      addLog('Error: Failed to fetch external data. Proceeding with local scan.');
-      const browserInfo = getBrowserInfo();
-      // Fallback
+      addLog('Critical error during scan. Compiling partial report.');
+      const browserInfo = await getBrowserInfo();
       setScanData({
+        ...quickData,
         ip: 'Hidden/Blocked',
         location: 'Unknown',
         browser: browserInfo.browser,
         browserVersion: browserInfo.version,
         engine: browserInfo.engine,
-        userAgent: browserInfo.userAgent,
-        os: navigator.platform,
-        deviceType: 'Unknown',
-        resolution: `${window.screen.width}x${window.screen.height}`,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        language: navigator.language,
-        cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
         gpu: getGPU(),
         network: 'Unknown',
         battery: 'Unknown'
-      });
+      } as ScanData);
       setStep('results');
     }
   };

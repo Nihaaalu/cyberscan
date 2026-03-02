@@ -19,6 +19,9 @@ interface ScanData {
   ip: string;
   location: string;
   browser: string;
+  browserVersion: string;
+  engine: string;
+  userAgent: string;
   os: string;
   deviceType: string;
   resolution: string;
@@ -47,6 +50,43 @@ export default function App() {
     }
   }, [logs]);
 
+  const getBrowserInfo = () => {
+    const ua = navigator.userAgent;
+    let browser = "Unknown";
+    let version = "Unknown";
+    let engine = "Unknown";
+
+    if (ua.includes("Edg")) {
+      browser = "Microsoft Edge";
+      version = ua.split("Edg/")[1]?.split(" ")[0] || "Unknown";
+    } else if (ua.includes("OPR") || ua.includes("Opera")) {
+      browser = "Opera";
+      version = ua.split("OPR/")[1]?.split(" ")[0] || ua.split("Opera/")[1]?.split(" ")[0] || "Unknown";
+    } else if (ua.includes("Chrome") && !ua.includes("Edg") && !ua.includes("OPR")) {
+      browser = "Google Chrome";
+      version = ua.split("Chrome/")[1]?.split(" ")[0] || "Unknown";
+    } else if (ua.includes("Safari") && !ua.includes("Chrome")) {
+      browser = "Safari";
+      version = ua.split("Version/")[1]?.split(" ")[0] || "Unknown";
+    } else if (ua.includes("Firefox")) {
+      browser = "Firefox";
+      version = ua.split("Firefox/")[1]?.split(" ")[0] || "Unknown";
+    }
+
+    if (ua.includes("AppleWebKit")) {
+      engine = "WebKit";
+      if (ua.includes("Chrome") || ua.includes("Edg") || ua.includes("OPR")) {
+        engine = "Blink";
+      }
+    } else if (ua.includes("Gecko") && !ua.includes("KHTML")) {
+      engine = "Gecko";
+    } else if (ua.includes("Trident")) {
+      engine = "Trident";
+    }
+
+    return { browser, version, engine, userAgent: ua };
+  };
+
   const getGPU = () => {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
@@ -59,23 +99,58 @@ export default function App() {
     return 'Unknown GPU';
   };
 
+  const runSpeedTest = async (): Promise<string> => {
+    const testFileUrl = 'https://picsum.photos/4000/4000'; // Large image for speed test (~3-5MB)
+    const fileSizeInBytes = 5 * 1024 * 1024; // Estimating 5MB if we can't get Content-Length
+    
+    try {
+      addLog('Starting network throughput test...');
+      const startTime = performance.now();
+      
+      const response = await fetch(testFileUrl, { cache: 'no-store' });
+      if (!response.ok) throw new Error('Speed test failed');
+      
+      const blob = await response.blob();
+      const endTime = performance.now();
+      
+      const durationInSeconds = (endTime - startTime) / 1000;
+      const sizeInBits = blob.size * 8;
+      const speedMbps = (sizeInBits / durationInSeconds) / (1024 * 1024);
+      
+      addLog(`Throughput test complete: ${speedMbps.toFixed(2)} Mbps`);
+      return `${speedMbps.toFixed(2)} Mbps (Real-time)`;
+    } catch (error) {
+      addLog('Speed test failed. Falling back to estimated downlink.');
+      // @ts-ignore
+      return navigator.connection ? `${navigator.connection.downlink} Mbps (Estimated)` : 'Unknown';
+    }
+  };
+
   const startScan = async () => {
     setStep('scanning');
     addLog('Initializing system scan...');
     
     // Simulate progress and data gathering
     const steps = [
-      { p: 10, m: 'Accessing browser environment...' },
-      { p: 25, m: 'Querying navigator API...' },
-      { p: 40, m: 'Retrieving hardware specifications...' },
-      { p: 60, m: 'Detecting network configuration...' },
-      { p: 80, m: 'Fetching geolocation data...' },
+      { p: 5, m: 'Accessing browser environment...' },
+      { p: 15, m: 'Querying navigator API...' },
+      { p: 25, m: 'Retrieving hardware specifications...' },
+      { p: 40, m: 'Detecting network configuration...' },
+      { p: 50, m: 'Initiating network throughput test...' },
+      { p: 85, m: 'Fetching geolocation data...' },
       { p: 100, m: 'Scan complete. Compiling report.' }
     ];
 
+    let networkSpeed = 'Unknown';
+
     for (const s of steps) {
-      await new Promise(r => setTimeout(r, 800));
-      setProgress(s.p);
+      if (s.p === 50) {
+        networkSpeed = await runSpeedTest();
+        setProgress(75); // Jump after speed test
+      } else {
+        await new Promise(r => setTimeout(r, 600));
+        setProgress(s.p);
+      }
       addLog(s.m);
     }
 
@@ -90,10 +165,15 @@ export default function App() {
         batteryInfo = `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'Discharging'})`;
       } catch (e) {}
 
+      const browserInfo = getBrowserInfo();
+
       const data: ScanData = {
         ip: ipRes.ip || 'Unknown',
         location: `${ipRes.city || 'Unknown'}, ${ipRes.country_name || 'Unknown'}`,
-        browser: `${navigator.userAgent.split(' ').pop()}`,
+        browser: browserInfo.browser,
+        browserVersion: browserInfo.version,
+        engine: browserInfo.engine,
+        userAgent: browserInfo.userAgent,
         os: navigator.platform,
         deviceType: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop',
         resolution: `${window.screen.width}x${window.screen.height}`,
@@ -101,8 +181,7 @@ export default function App() {
         language: navigator.language,
         cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
         gpu: getGPU(),
-        // @ts-ignore
-        network: navigator.connection ? `${navigator.connection.effectiveType} (~${navigator.connection.downlink} Mbps)` : 'Unknown',
+        network: networkSpeed,
         battery: batteryInfo
       };
 
@@ -110,11 +189,15 @@ export default function App() {
       setStep('results');
     } catch (error) {
       addLog('Error: Failed to fetch external data. Proceeding with local scan.');
+      const browserInfo = getBrowserInfo();
       // Fallback
       setScanData({
         ip: 'Hidden/Blocked',
         location: 'Unknown',
-        browser: navigator.userAgent,
+        browser: browserInfo.browser,
+        browserVersion: browserInfo.version,
+        engine: browserInfo.engine,
+        userAgent: browserInfo.userAgent,
         os: navigator.platform,
         deviceType: 'Unknown',
         resolution: `${window.screen.width}x${window.screen.height}`,
@@ -278,6 +361,9 @@ export default function App() {
                 title="Software Environment"
                 items={[
                   { label: 'Browser', value: scanData.browser },
+                  { label: 'Version', value: scanData.browserVersion },
+                  { label: 'Engine', value: scanData.engine },
+                  { label: 'User Agent', value: scanData.userAgent },
                   { label: 'Language', value: scanData.language },
                   { label: 'Cookies', value: scanData.cookies },
                 ]}

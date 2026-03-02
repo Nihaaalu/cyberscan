@@ -1,0 +1,5 @@
+{
+  "name": "CyberScan: Awareness Toolkit",
+  "description": "A cybersecurity awareness tool demonstrating how websites can detect device information and fingerprint visitors.",
+  "requestFramePermissions": []
+}
